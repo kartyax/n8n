@@ -1,1 +1,18 @@
-test
+services:
+  n8n:
+    build: .
+    container_name: n8n-whisper
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=false
+      - N8N_HOST=localhost
+      - N8N_PORT=5678
+      - NODE_ENV=production
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - /tmp:/tmp
+    restart: always
+
+volumes:
+  n8n_data:

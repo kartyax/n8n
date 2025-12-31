@@ -1,87 +1,658 @@
 {
-  "name": "Simple Whisper STT",
+  "name": "Auto YouTube Shorts Generator",
   "nodes": [
     {
       "parameters": {
         "httpMethod": "POST",
-        "path": "whisper-stt",
-        "responseMode": "lastNode"
+        "path": "youtube-to-shorts",
+        "responseMode": "responseNode",
+        "options": {}
       },
-      "name": "Webhook",
+      "id": "webhook-trigger",
+      "name": "Webhook Trigger",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 1,
-      "position": [200, 300]
+      "position": [240, 300],
+      "webhookId": "auto-shorts-webhook"
+    },
+    {
+      "parameters": {
+        "functionCode": "const url = $input.item.json.body.url;\nconst language = $input.item.json.body.language || 'id';\nconst upload = $input.item.json.body.upload || false;\n\n// Validasi URL YouTube\nconst youtubeRegex = /^(https?:\\/\\/)?(www\\.)?(youtube\\.com\\/watch\\?v=|youtu\\.be\\/)([a-zA-Z0-9_-]{11})/;\nconst isValid = youtubeRegex.test(url);\n\nif (!isValid) {\n  return {\n    json: {\n      valid: false,\n      error: 'URL YouTube tidak valid',\n      url: url\n    }\n  };\n}\n\n// Extract video ID\nconst videoId = url.match(/(?:v=|youtu\\.be\\/)([a-zA-Z0-9_-]{11})/)[1];\nconst timestamp = Date.now();\n\nreturn {\n  json: {\n    valid: true,\n    url: url,\n    videoId: videoId,\n    language: language,\n    upload: upload,\n    timestamp: timestamp,\n    rawVideoPath: `/videos/raw/video_${timestamp}.mp4`,\n    audioPath: `/videos/audio/audio_${timestamp}.wav`\n  }\n};"
+      },
+      "id": "validate-url",
+      "name": "Validasi URL",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [440, 300]
     },
     {
       "parameters": {
         "conditions": {
-          "string": [
+          "boolean": [
             {
-              "value1": "={{$json[\"url\"]}}",
-              "operation": "contains",
-              "value2": "youtube"
+              "value1": "={{ $json.valid }}",
+              "value2": true
             }
           ]
         }
       },
-      "name": "IF URL Valid",
+      "id": "check-valid",
+      "name": "Cek URL Valid",
       "type": "n8n-nodes-base.if",
       "typeVersion": 1,
-      "position": [400, 300]
+      "position": [640, 300]
     },
     {
       "parameters": {
-        "command": "yt-dlp -f mp4 -o /tmp/video.mp4 {{$json[\"url\"]}}"
+        "respondWith": "json",
+        "responseBody": "={{ { \"success\": false, \"error\": $json.error } }}"
       },
-      "name": "Download Video",
+      "id": "error-invalid-url",
+      "name": "Return Error URL",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [840, 450]
+    },
+    {
+      "parameters": {
+        "command": "=yt-dlp -f 'best[height<=1080]' -o {{ $json.rawVideoPath }} {{ $json.url }}"
+      },
+      "id": "download-video",
+      "name": "Download Video YouTube",
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
-      "position": [600, 200]
+      "position": [840, 150]
     },
     {
       "parameters": {
-        "command": "ffmpeg -i /tmp/video.mp4 -ss {{$json[\"start\"]}} -to {{$json[\"end\"]}} -c copy /tmp/crop.mp4"
+        "command": "=ffmpeg -i {{ $json.rawVideoPath }} -vn -acodec pcm_s16le -ar 16000 -ac 1 {{ $json.audioPath }}"
       },
-      "name": "Crop Video",
-      "type": "n8n-nodes-base.executeCommand",
-      "typeVersion": 1,
-      "position": [800, 200]
-    },
-    {
-      "parameters": {
-        "command": "ffmpeg -i /tmp/crop.mp4 -vn -acodec mp3 /tmp/audio.mp3"
-      },
+      "id": "extract-audio",
       "name": "Extract Audio",
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
-      "position": [1000, 200]
+      "position": [1040, 150]
     },
     {
       "parameters": {
-        "command": "python3 - << 'EOF'\nimport whisper\nmodel = whisper.load_model(\"base\")\nresult = model.transcribe(\"/tmp/audio.mp3\")\nprint(result[\"text\"])\nEOF"
+        "resource": "audio",
+        "operation": "transcribe",
+        "binaryPropertyName": "data",
+        "options": {
+          "language": "={{ $json.language }}"
+        }
       },
-      "name": "Whisper STT",
+      "id": "speech-to-text",
+      "name": "Speech to Text",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [1240, 150],
+      "credentials": {
+        "openAiApi": {
+          "id": "1",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Baca file audio untuk transcription\nconst fs = require('fs');\nconst audioPath = $input.item.json.audioPath;\n\ntry {\n  const audioBuffer = fs.readFileSync(audioPath);\n  return {\n    json: $input.item.json,\n    binary: {\n      data: {\n        data: audioBuffer.toString('base64'),\n        mimeType: 'audio/wav',\n        fileName: audioPath.split('/').pop()\n      }\n    }\n  };\n} catch (error) {\n  return {\n    json: {\n      ...($input.item.json),\n      error: `Failed to read audio: ${error.message}`\n    }\n  };\n}"
+      },
+      "id": "prepare-audio",
+      "name": "Prepare Audio File",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1040, 250]
+    },
+    {
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "model": "gpt-4",
+        "prompt": "=Analisis transkrip video berikut dan temukan 3 momen paling menarik untuk dijadikan YouTube Shorts (maksimal 60 detik per clip).\n\nTranskrip:\n{{ $json.text }}\n\nBerikan output dalam format JSON dengan struktur:\n{\n  \"moments\": [\n    {\n      \"start\": \"00:01:23\",\n      \"end\": \"00:02:15\",\n      \"duration\": 52,\n      \"title\": \"Judul menarik\",\n      \"description\": \"Deskripsi singkat\",\n      \"reason\": \"Alasan kenapa menarik\"\n    }\n  ]\n}\n\nPastikan:\n- Durasi antara 15-60 detik\n- Pilih momen dengan hook kuat\n- Konten standalone tanpa context sebelumnya\n- Timestamp dalam format HH:MM:SS",
+        "options": {
+          "temperature": 0.7
+        }
+      },
+      "id": "ai-analyze",
+      "name": "AI Analisis Konten",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [1440, 150],
+      "credentials": {
+        "openAiApi": {
+          "id": "1",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "const response = $input.item.json.message?.content || $input.item.json.text;\n\ntry {\n  // Parse JSON dari response AI\n  const analysis = JSON.parse(response);\n  const moments = analysis.moments || [];\n  \n  if (moments.length === 0) {\n    return {\n      json: {\n        hasTimestamp: false,\n        error: 'Konten tidak layak - tidak ditemukan momen menarik',\n        rawResponse: response\n      }\n    };\n  }\n  \n  return {\n    json: {\n      hasTimestamp: true,\n      moments: moments,\n      totalClips: moments.length,\n      rawVideoPath: $input.item.json.rawVideoPath,\n      videoId: $input.item.json.videoId,\n      timestamp: $input.item.json.timestamp,\n      language: $input.item.json.language,\n      upload: $input.item.json.upload\n    }\n  };\n} catch (error) {\n  return {\n    json: {\n      hasTimestamp: false,\n      error: `Gagal parse AI response: ${error.message}`,\n      rawResponse: response\n    }\n  };\n}"
+      },
+      "id": "parse-timestamps",
+      "name": "Cek & Parse Timestamp",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1640, 150]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.hasTimestamp }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "check-timestamp",
+      "name": "Cek Timestamp Found",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1840, 150]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"success\": false, \"error\": $json.error, \"message\": \"Konten tidak layak untuk dijadikan Shorts\" } }}"
+      },
+      "id": "error-no-timestamp",
+      "name": "Return Error No Timestamp",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [2040, 300]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "split-moments",
+      "name": "Loop Setiap Moment",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [2040, 150]
+    },
+    {
+      "parameters": {
+        "functionCode": "const moment = $input.item.json.moments[$input.context.noItemsLeft ? 0 : $input.context.currentRunIndex];\nconst clipIndex = $input.context.currentRunIndex + 1;\nconst timestamp = $input.item.json.timestamp;\n\nconst outputPath = `/videos/clips/clip_${timestamp}_${clipIndex}.mp4`;\n\nreturn {\n  json: {\n    ...($input.item.json),\n    currentMoment: moment,\n    clipIndex: clipIndex,\n    outputPath: outputPath,\n    clipTitle: moment.title,\n    clipDescription: moment.description\n  }\n};"
+      },
+      "id": "prepare-clip-data",
+      "name": "Generate Clip Data",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [2240, 150]
+    },
+    {
+      "parameters": {
+        "command": "=ffmpeg -i {{ $json.rawVideoPath }} -ss {{ $json.currentMoment.start }} -t {{ $json.currentMoment.duration }} -c:v libx264 -crf 23 -preset fast -c:a aac -b:a 128k {{ $json.outputPath }} -y"
+      },
+      "id": "auto-clip",
+      "name": "Auto Clip Video",
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
-      "position": [1200, 200]
+      "position": [2440, 150]
+    },
+    {
+      "parameters": {
+        "command": "=ffmpeg -i {{ $json.outputPath }} -vf \"scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920\" -c:a copy {{ $json.outputPath.replace('.mp4', '_shorts.mp4') }} -y"
+      },
+      "id": "resize-shorts",
+      "name": "Resize 9:16 Shorts",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [2640, 150]
+    },
+    {
+      "parameters": {
+        "functionCode": "const outputPath = $input.item.json.outputPath.replace('.mp4', '_shorts.mp4');\n\nreturn {\n  json: {\n    ...($input.item.json),\n    finalOutputPath: outputPath,\n    clipReady: true,\n    approvalNeeded: true,\n    approved: false\n  }\n};"
+      },
+      "id": "prepare-approval",
+      "name": "Prepare Manual Approval",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [2840, 150]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.approved }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "manual-approval",
+      "name": "Manual Approval Gate",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [3040, 150],
+      "notes": "MANUAL: Set approved=true untuk lanjut, false untuk reject"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Rejected - kembali ke AI Analisis dengan prompt yang lebih spesifik\nconst rejectionReason = $input.item.json.rejectionReason || 'Not engaging enough';\n\nreturn {\n  json: {\n    rejectLoop: true,\n    loopCount: ($input.item.json.loopCount || 0) + 1,\n    rejectionReason: rejectionReason,\n    previousMoment: $input.item.json.currentMoment,\n    rawVideoPath: $input.item.json.rawVideoPath,\n    videoId: $input.item.json.videoId,\n    timestamp: $input.item.json.timestamp,\n    language: $input.item.json.language\n  }\n};"
+      },
+      "id": "reject-handler",
+      "name": "Handle Rejection",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [3240, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const fs = require('fs');\nconst clipPath = $input.item.json.finalOutputPath;\n\ntry {\n  const stats = fs.statSync(clipPath);\n  const fileSizeMB = (stats.size / (1024 * 1024)).toFixed(2);\n  \n  return {\n    json: {\n      clipIndex: $input.item.json.clipIndex,\n      title: $input.item.json.clipTitle,\n      description: $input.item.json.clipDescription,\n      filePath: clipPath,\n      fileSize: fileSizeMB + ' MB',\n      duration: $input.item.json.currentMoment.duration,\n      start: $input.item.json.currentMoment.start,\n      end: $input.item.json.currentMoment.end,\n      videoId: $input.item.json.videoId,\n      upload: $input.item.json.upload,\n      language: $input.item.json.language\n    }\n  };\n} catch (error) {\n  return {\n    json: {\n      error: `Failed to get clip metadata: ${error.message}`,\n      clipPath: clipPath\n    }\n  };\n}"
+      },
+      "id": "prepare-metadata",
+      "name": "Prepare Metadata",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [3240, 150]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.upload }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "check-upload",
+      "name": "Cek Upload Enabled",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [3440, 150]
+    },
+    {
+      "parameters": {
+        "operation": "upload",
+        "videoTitle": "={{ $json.title }}",
+        "videoDescription": "={{ $json.description }}\\n\\n#Shorts #YouTubeShorts",
+        "categoryId": "22",
+        "privacyStatus": "private",
+        "binaryPropertyName": "data"
+      },
+      "id": "upload-youtube",
+      "name": "Upload ke YouTube Shorts",
+      "type": "n8n-nodes-base.youTube",
+      "typeVersion": 1,
+      "position": [3640, 50],
+      "credentials": {
+        "youTubeOAuth2Api": {
+          "id": "2",
+          "name": "YouTube OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "const uploadUrl = $input.item.json.id ? `https://youtube.com/shorts/${$input.item.json.id}` : null;\n\nreturn {\n  json: {\n    clipIndex: $node[\"Prepare Metadata\"].json.clipIndex,\n    title: $node[\"Prepare Metadata\"].json.title,\n    localPath: $node[\"Prepare Metadata\"].json.filePath,\n    uploaded: true,\n    uploadUrl: uploadUrl,\n    videoId: $input.item.json.id\n  }\n};"
+      },
+      "id": "add-upload-url",
+      "name": "Add Upload URL",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [3840, 50]
+    },
+    {
+      "parameters": {
+        "functionCode": "return {\n  json: {\n    clipIndex: $input.item.json.clipIndex,\n    title: $input.item.json.title,\n    localPath: $input.item.json.filePath,\n    uploaded: false,\n    message: 'Upload disabled'\n  }\n};"
+      },
+      "id": "skip-upload",
+      "name": "Skip Upload",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [3640, 250]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "mergeByPosition"
+      },
+      "id": "merge-results",
+      "name": "Merge Upload Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [3840, 150]
+    },
+    {
+      "parameters": {},
+      "id": "loop-back",
+      "name": "Loop Back to Split",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [4040, 150]
+    },
+    {
+      "parameters": {
+        "functionCode": "const allClips = $input.all();\n\nconst results = allClips.map(item => ({\n  clipIndex: item.json.clipIndex,\n  title: item.json.title,\n  localPath: item.json.localPath,\n  uploaded: item.json.uploaded,\n  uploadUrl: item.json.uploadUrl || null\n}));\n\nreturn {\n  json: {\n    success: true,\n    totalClips: results.length,\n    clips: results,\n    message: 'Semua clip berhasil diproses'\n  }\n};"
+      },
+      "id": "final-response",
+      "name": "Prepare Final Response",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [4240, 150]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}"
+      },
+      "id": "return-success",
+      "name": "Return Success Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [4440, 150]
     }
   ],
   "connections": {
-    "Webhook": {
-      "main": [[{ "node": "IF URL Valid", "type": "main", "index": 0 }]]
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Validasi URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
-    "IF URL Valid": {
-      "main": [[{ "node": "Download Video", "type": "main", "index": 0 }]]
+    "Validasi URL": {
+      "main": [
+        [
+          {
+            "node": "Cek URL Valid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
-    "Download Video": {
-      "main": [[{ "node": "Crop Video", "type": "main", "index": 0 }]]
+    "Cek URL Valid": {
+      "main": [
+        [
+          {
+            "node": "Download Video YouTube",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return Error URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
-    "Crop Video": {
-      "main": [[{ "node": "Extract Audio", "type": "main", "index": 0 }]]
+    "Download Video YouTube": {
+      "main": [
+        [
+          {
+            "node": "Extract Audio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Extract Audio": {
-      "main": [[{ "node": "Whisper STT", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Prepare Audio File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Audio File": {
+      "main": [
+        [
+          {
+            "node": "Speech to Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Speech to Text": {
+      "main": [
+        [
+          {
+            "node": "AI Analisis Konten",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Analisis Konten": {
+      "main": [
+        [
+          {
+            "node": "Cek & Parse Timestamp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cek & Parse Timestamp": {
+      "main": [
+        [
+          {
+            "node": "Cek Timestamp Found",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cek Timestamp Found": {
+      "main": [
+        [
+          {
+            "node": "Loop Setiap Moment",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return Error No Timestamp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Setiap Moment": {
+      "main": [
+        [
+          {
+            "node": "Generate Clip Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Clip Data": {
+      "main": [
+        [
+          {
+            "node": "Auto Clip Video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auto Clip Video": {
+      "main": [
+        [
+          {
+            "node": "Resize 9:16 Shorts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resize 9:16 Shorts": {
+      "main": [
+        [
+          {
+            "node": "Prepare Manual Approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Manual Approval": {
+      "main": [
+        [
+          {
+            "node": "Manual Approval Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Approval Gate": {
+      "main": [
+        [
+          {
+            "node": "Prepare Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Rejection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Metadata": {
+      "main": [
+        [
+          {
+            "node": "Cek Upload Enabled",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cek Upload Enabled": {
+      "main": [
+        [
+          {
+            "node": "Upload ke YouTube Shorts",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Skip Upload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload ke YouTube Shorts": {
+      "main": [
+        [
+          {
+            "node": "Add Upload URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add Upload URL": {
+      "main": [
+        [
+          {
+            "node": "Merge Upload Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skip Upload": {
+      "main": [
+        [
+          {
+            "node": "Merge Upload Results",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Upload Results": {
+      "main": [
+        [
+          {
+            "node": "Loop Back to Split",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Back to Split": {
+      "main": [
+        [
+          {
+            "node": "Loop Setiap Moment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Rejection": {
+      "main": [
+        [
+          {
+            "node": "AI Analisis Konten",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
-  "active": true
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2025-01-01T00:00:00.000Z",
+  "versionId": "1"
 }

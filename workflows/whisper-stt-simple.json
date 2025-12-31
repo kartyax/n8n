@@ -1,0 +1,87 @@
+{
+  "name": "Simple Whisper STT",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whisper-stt",
+        "responseMode": "lastNode"
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json[\"url\"]}}",
+              "operation": "contains",
+              "value2": "youtube"
+            }
+          ]
+        }
+      },
+      "name": "IF URL Valid",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [400, 300]
+    },
+    {
+      "parameters": {
+        "command": "yt-dlp -f mp4 -o /tmp/video.mp4 {{$json[\"url\"]}}"
+      },
+      "name": "Download Video",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [600, 200]
+    },
+    {
+      "parameters": {
+        "command": "ffmpeg -i /tmp/video.mp4 -ss {{$json[\"start\"]}} -to {{$json[\"end\"]}} -c copy /tmp/crop.mp4"
+      },
+      "name": "Crop Video",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [800, 200]
+    },
+    {
+      "parameters": {
+        "command": "ffmpeg -i /tmp/crop.mp4 -vn -acodec mp3 /tmp/audio.mp3"
+      },
+      "name": "Extract Audio",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1000, 200]
+    },
+    {
+      "parameters": {
+        "command": "python3 - << 'EOF'\nimport whisper\nmodel = whisper.load_model(\"base\")\nresult = model.transcribe(\"/tmp/audio.mp3\")\nprint(result[\"text\"])\nEOF"
+      },
+      "name": "Whisper STT",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1200, 200]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [[{ "node": "IF URL Valid", "type": "main", "index": 0 }]]
+    },
+    "IF URL Valid": {
+      "main": [[{ "node": "Download Video", "type": "main", "index": 0 }]]
+    },
+    "Download Video": {
+      "main": [[{ "node": "Crop Video", "type": "main", "index": 0 }]]
+    },
+    "Crop Video": {
+      "main": [[{ "node": "Extract Audio", "type": "main", "index": 0 }]]
+    },
+    "Extract Audio": {
+      "main": [[{ "node": "Whisper STT", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": true
+}
